@@ -10,13 +10,14 @@ from usrp_driver import B210UnifiedDriver
 import sdr_utils
 
 
-args = sdr_utils.get_standard_args("Object Detection", default_freq=5.831e9)
+# args = sdr_utils.get_standard_args("Object Detection", default_freq=5.831e9)
+args = sdr_utils.get_standard_args("Object Detection", default_freq=915e6)
 
 CHIRP_LEN = 256        
 GAP_LEN = 2000         
-THRESHOLD = 0.05    
+THRESHOLD = 0.05
 
-TRAINING_FRAMES = 30          
+TRAINING_FRAMES = 30           
 CSI_WIN_SIZE = 64              
 
 sig_handler = sdr_utils.SignalHandler()
@@ -100,7 +101,9 @@ def extract_csi_feature(rx_chunk):
     """
     res = sdr_utils.correlate_and_detect(rx_chunk, PROBE_TX)
     
-    if res['snr_db'] > 10:
+    # ‼️ Reduced SNR threshold from 10 to 3 dB. 
+    # High freqs have higher path loss, so we must be more tolerant of noise.
+    if res['snr_db'] > 3:
         peak_idx = res['peak_idx']
         # Extract CSI Window around the peak
         PRE_CURSOR = 10
@@ -123,6 +126,11 @@ def extract_csi_feature(rx_chunk):
         # We use the Log-Magnitude CFR (Channel Frequency Response) as the feature
         metrics = sdr_utils.calculate_csi_metrics(cir_window, args.rate)
         return metrics['cfr_db']
+    
+    # ‼️ Added debug print to help diagnose 5.8GHz signal issues
+    # Uncomment if you suspect your signal is being rejected despite detection
+    # elif res['peak_val'] > THRESHOLD:
+    #     print(f"  [DEBUG] Signal rejected: SNR {res['snr_db']:.1f} dB < 3 dB")
         
     return None
 
@@ -271,6 +279,11 @@ def main_menu(usrp, driver):
 
 if __name__ == "__main__":
     print("--> Initializing Object Detector (Trainable)...")
+    
+    # ‼️ Explicitly print configuration
+    print(f"  [CONFIG] Freq: {args.freq/1e9:.3f} GHz")
+    print(f"  [CONFIG] Rate: {args.rate/1e6:.1f} MHz")
+    print(f"  [CONFIG] Gain: {args.gain} dB")
     
     # Force restoration of default SIGINT handler.
     signal.signal(signal.SIGINT, signal.default_int_handler)

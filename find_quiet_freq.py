@@ -1,7 +1,5 @@
 import uhd
 import numpy as np
-import time
-import sys
 from usrp_driver import B210UnifiedDriver
 import sdr_utils
 
@@ -22,6 +20,12 @@ def get_simple_bar(value, min_val=-100, max_val=-30, width=30):
 
 def run_scan():
     print(f"--> Initializing Scanner...")
+
+
+    print(f"  [CONFIG] Scan Range: {START_FREQ/1e9:.3f} GHz - {STOP_FREQ/1e9:.3f} GHz")
+    print(f"  [CONFIG] Rate:       {SAMPLE_RATE/1e6:.1f} MHz")
+    print(f"  [CONFIG] Gain:       {GAIN} dB")
+
     # Initialize at start freq
     driver = B210UnifiedDriver(START_FREQ, SAMPLE_RATE, GAIN)
     usrp = driver.initialize()
@@ -75,7 +79,7 @@ def run_scan():
                 scan_results.append((current_freq, pwr_db))
                 
                 bar = get_simple_bar(pwr_db)
-                print(f"{current_freq/1e9:.3f}       | {pwr_db:6.1f}     | {bar}")
+                print(f"{current_freq/1e9:.3f}        | {pwr_db:6.1f}      | {bar}")
 
             current_freq += STEP_SIZE
             
