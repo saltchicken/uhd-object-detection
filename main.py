@@ -10,7 +10,7 @@ from usrp_driver import B210UnifiedDriver
 import sdr_utils
 
 
-args = sdr_utils.get_standard_args("Object Detection", default_freq=5.8e9)
+args = sdr_utils.get_standard_args("Object Detection", default_freq=5.831e9)
 
 CHIRP_LEN = 256        
 GAP_LEN = 2000         

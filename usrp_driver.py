@@ -66,7 +66,22 @@ class B210UnifiedDriver:
         
         return self.usrp
 
+    def tune_frequency(self, freq, channel=0):
+        """
+        ‼️ RESTORED: Dynamic Frequency Tuning.
+        Allows the application to hop frequencies at runtime without re-initializing.
+        """
+        if not self.usrp:
+            return
 
+        treq = uhd.types.TuneRequest(freq)
+        treq.args = uhd.types.DeviceAddr("mode_n=integer")
+        
+        # Tune RX
+        self.usrp.set_rx_freq(treq, channel)
+
+        # This prevents "garbage" samples immediately after a hop.
+        time.sleep(0.015) 
 
     def get_rx_streamer(self):
         """Helper to get the RX streamer for active channels."""
