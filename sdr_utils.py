@@ -62,6 +62,39 @@ def correlate_and_detect(rx_chunk, probe_sequence):
         "noise_floor": noise_floor
     }
 
+# ‼️ NEW: Added energy detection for passive mode
+def detect_energy_burst(rx_chunk, threshold_factor=3.0):
+    """
+    Detects if a signal burst is present based on raw energy levels
+    relative to the noise floor of the current chunk.
+    """
+    mag = np.abs(rx_chunk)
+    # Use the bottom 20% of samples as a noise floor estimate
+    sorted_mag = np.sort(mag)
+    noise_floor = np.mean(sorted_mag[:int(len(mag)*0.2)])
+    
+    # Avoid div by zero
+    noise_floor = max(noise_floor, 1e-9)
+    
+    # Look for a burst
+    peak_val = np.max(mag)
+    peak_idx = np.argmax(mag)
+    
+    snr_linear = peak_val / noise_floor
+    snr_db = 10 * np.log10(snr_linear)
+    
+    # Simple trigger: if peak is significantly higher than noise floor
+    is_burst = snr_linear > threshold_factor
+    
+    return {
+        "mag": mag,
+        "peak_idx": peak_idx,
+        "peak_val": peak_val,
+        "snr_db": snr_db,
+        "is_burst": is_burst,
+        "noise_floor": noise_floor
+    }
+
 def calculate_csi_metrics(cir_window, sample_rate):
     pdp = np.abs(cir_window)**2
     thresh = np.max(pdp) * 0.1
@@ -95,11 +128,3 @@ def calculate_csi_metrics(cir_window, sample_rate):
         "cfr_linear": cfr_mag_linear,
         "pdp": pdp 
     }
-
-
-
-
-
-
-
-
