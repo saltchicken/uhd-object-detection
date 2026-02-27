@@ -15,26 +15,32 @@ args = sdr_utils.get_standard_args("Passive Object Detection", default_freq=5.74
 # ‼️ CHANGED: Threshold logic is now relative to noise floor (SNR), not absolute voltage
 SNR_THRESHOLD_DB = 5.0  
 
-TRAINING_FRAMES = 30            
-CSI_WIN_SIZE = 64               
+TRAINING_FRAMES = 100            
+CSI_WIN_SIZE = 64                
 
 sig_handler = sdr_utils.SignalHandler()
-
-# ‼️ REMOVED: ControllableTransmitter class and PROBE_TX definitions. 
-# This script is strictly passive.
 
 class RFModel:
     def __init__(self):
         self.profiles = {} # Dictionary to store 'label' -> 'mean_vector'
 
     def train(self, label, data_matrix):
+        """
+        ‼️ CHANGED: Uses Median instead of Mean for robustness.
+        ‼️ CHANGED: Uses Normalization (Shape-based).
+        """
         if len(data_matrix) == 0:
             print(f"  [Model] ⚠️ No data captured for '{label}'. Training skipped.")
             return
 
+        # Normalize 
+        norm_matrix = [sdr_utils.normalize_log_vector(v) for v in data_matrix]
+
         # Average across all captured frames to remove noise
-        mean_vector = np.mean(np.array(data_matrix), axis=0)
-        self.profiles[label] = mean_vector
+        # Using Median is better for passive sensing where packet power varies wildly
+        median_vector = np.median(np.array(norm_matrix), axis=0)
+        
+        self.profiles[label] = median_vector
         print(f"  [Model] Learned '{label}' from {len(data_matrix)} frames.")
 
     def predict(self, current_vector):
@@ -44,8 +50,11 @@ class RFModel:
         best_label = None
         min_dist = float('inf')
 
+        # ‼️ CHANGED: Normalize input
+        norm_input = sdr_utils.normalize_log_vector(current_vector)
+
         for label, profile in self.profiles.items():
-            dist = np.linalg.norm(current_vector - profile)
+            dist = np.linalg.norm(norm_input - profile)
             if dist < min_dist:
                 min_dist = dist
                 best_label = label
@@ -78,8 +87,6 @@ def extract_passive_feature(rx_chunk):
              captured_burst[:copy_len] = rx_chunk[start_idx:src_end]
 
         # 3. Use the raw burst as the "Channel Impulse Response" proxy
-        # Since we don't know the transmitted data, we assume the router sends
-        # similar preambles/beacons repeatedly.
         metrics = sdr_utils.calculate_csi_metrics(captured_burst, args.rate)
         return metrics['cfr_db']
         
@@ -90,10 +97,19 @@ def collect_training_data(usrp, driver, label):
     """
     Captures N frames for a specific label using passive listening.
     """
-    print(f"\n  [TRAIN] 📸 Listening for {TRAINING_FRAMES} bursts for '{label}'... (Ctrl+C to cancel)")
+    # ‼️ NEW: Added 5-second countdown to allow user to position themselves
+    print(f"\n  [TRAIN] ⏳ Get ready! Capture starts in 5 seconds...")
+    for i in range(5, 0, -1):
+        sys.stdout.write(f"\r  [TRAIN] Starting in {i}...")
+        sys.stdout.flush()
+        time.sleep(1.0)
+    print("\n  [TRAIN] 🏁 GO! Listening for bursts...")
+
+    print(f"  [TRAIN] 📸 Listening for {TRAINING_FRAMES} bursts for '{label}'... (Ctrl+C to cancel)")
     
     rx_streamer = driver.get_rx_streamer()
-    buff_len = 4096 # Smaller buffer for faster loops
+    # ‼️ CHANGED: Buffer size ~40ms at 1Msps
+    buff_len = 40960 
     recv_buffer = np.zeros((1, buff_len), dtype=np.complex64)
     metadata = uhd.types.RXMetadata()
     
@@ -118,8 +134,9 @@ def collect_training_data(usrp, driver, label):
                     collected_frames.append(feature)
                     sys.stdout.write(f"\r  [TRAIN] Progress: {len(collected_frames)}/{TRAINING_FRAMES}")
                     sys.stdout.flush()
-                    # Sleep slightly to avoid capturing the exact same packet twice if loop is too fast
-                    time.sleep(0.01)
+                    
+                    # ‼️ REMOVED: sleep here to prevent buffer overflow.
+                    # We rely on natural packet gaps.
 
     except KeyboardInterrupt:
         print(f"\n  [TRAIN] ⚠️  Capture cancelled by user.")
@@ -138,7 +155,7 @@ def run_inference_loop(usrp, driver, model):
     print(f"\n  [LIVE] 👁️  Starting Passive Recognition. Press Ctrl+C to return to menu.")
     
     rx_streamer = driver.get_rx_streamer()
-    buff_len = 4096
+    buff_len = 40960
     recv_buffer = np.zeros((1, buff_len), dtype=np.complex64)
     metadata = uhd.types.RXMetadata()
     
@@ -146,25 +163,42 @@ def run_inference_loop(usrp, driver, model):
     cmd.stream_now = True
     rx_streamer.issue_stream_cmd(cmd)
 
+    # ‼️ NEW: Timer variables for non-blocking UI updates
+    last_print_time = 0
+    PRINT_COOLDOWN = 0.2
+
     try:
         while True:
+            # ‼️ CRITICAL: We must pull samples constantly to prevent overflow.
             samps = rx_streamer.recv(recv_buffer, metadata, 0.1)
+            
+            # Check for Overflow (PC too slow or USB issue)
+            if metadata.error_code == uhd.types.RXMetadataErrorCode.overflow:
+                sys.stdout.write('O')
+                sys.stdout.flush()
+                continue
             
             if metadata.error_code != uhd.types.RXMetadataErrorCode.none:
                  continue
 
             if samps > 0:
-                data = recv_buffer[0][:samps]
-                feature = extract_passive_feature(data)
-                
-                if feature is not None:
-                    label, dist = model.predict(feature)
+                # ‼️ Optimization: Only process data if we are ready to print new results.
+                # This saves CPU and ensures we catch the latest data when the timer is up.
+                if time.time() - last_print_time > PRINT_COOLDOWN:
                     
-                    # ‼️ Visual Feedback for signal strength
-                    pwr_db = 10*np.log10(np.mean(np.abs(data)**2) + 1e-12)
+                    data = recv_buffer[0][:samps]
+                    feature = extract_passive_feature(data)
                     
-                    status_str = f"PREDICTION: {label}"
-                    print(f"  [LIVE] {status_str:<20} | Dist: {dist:6.2f} | Burst Pwr: {pwr_db:.1f} dB")
+                    if feature is not None:
+                        label, dist = model.predict(feature)
+                        
+                        pwr_db = 10*np.log10(np.mean(np.abs(data)**2) + 1e-12)
+                        
+                        status_str = f"PREDICTION: {label}"
+                        print(f"  [LIVE] {status_str:<20} | Dist: {dist:6.2f} | Burst Pwr: {pwr_db:.1f} dB")
+                        
+                        # Reset timer
+                        last_print_time = time.time()
 
     except KeyboardInterrupt:
         print("\n  [LIVE] 🛑 Stopping recognition loop...")
@@ -179,7 +213,7 @@ def main_menu(usrp, driver):
     try:
         while True:
             print("\n" + "="*40)
-            print("    PASSIVE WIFI SENSING MENU")
+            print("   PASSIVE WIFI SENSING MENU")
             print("="*40)
             print(f" Current Knowledge: {list(model.profiles.keys())}")
             print(" [1] Train 'Empty' (Baseline)")
@@ -194,7 +228,7 @@ def main_menu(usrp, driver):
                 
             elif choice == '1':
                 print("\nEnsure area is clear.")
-                time.sleep(1)
+                # time.sleep(1) # Removed redundant sleep in menu, moved to function
                 frames = collect_training_data(usrp, driver, "Empty")
                 model.train("Empty", frames)
                 
@@ -202,7 +236,7 @@ def main_menu(usrp, driver):
                 label = input("Enter object name (e.g. 'Bottle', 'Hand'): ")
                 if label:
                     print(f"\nPlace '{label}' in target zone.")
-                    input("Press Enter to start listening...")
+                    input("Press Enter to start sequence...") # Changed text slightly
                     frames = collect_training_data(usrp, driver, label)
                     model.train(label, frames)
                     

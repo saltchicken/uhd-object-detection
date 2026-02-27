@@ -33,6 +33,18 @@ def generate_chirp_probe(length):
     return (chirp * window).astype(np.complex64) * 0.7
 
 
+# ‼️ NEW: Normalization helper to make detection invariant to absolute gain changes
+def normalize_log_vector(vec):
+    """
+    Subtracts the mean from a log-scale (dB) vector.
+    This focuses on the 'shape' of the frequency response (multipath)
+    rather than the absolute signal strength (which drifts with temp/gain).
+    """
+    if vec is None or len(vec) == 0:
+        return vec
+    return vec - np.mean(vec)
+
+
 def correlate_and_detect(rx_chunk, probe_sequence):
     """
     Consolidates the correlation, magnitude, and SNR calculation 
@@ -62,7 +74,7 @@ def correlate_and_detect(rx_chunk, probe_sequence):
         "noise_floor": noise_floor
     }
 
-# ‼️ NEW: Added energy detection for passive mode
+
 def detect_energy_burst(rx_chunk, threshold_factor=3.0):
     """
     Detects if a signal burst is present based on raw energy levels
